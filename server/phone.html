@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Vision Assist — Phone Mic</title>
+    <style>
+        :root {
+            --bg: #0f0f14;
+            --card: #1a1a24;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.35);
+            --green: #22c55e;
+            --red: #ef4444;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+            background: linear-gradient(135deg, #6366f1, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-bottom: 24px;
+        }
+
+        .status-bar {
+            display: flex;
+            gap: 16px;
+            background: var(--card);
+            border-radius: 12px;
+            padding: 12px 20px;
+            margin-bottom: 24px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--red);
+            transition: background 0.3s;
+        }
+
+        .dot.on {
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green);
+        }
+
+        .mic-btn {
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            border: 3px solid var(--accent);
+            background: var(--card);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .mic-btn:active {
+            transform: scale(0.95);
+        }
+
+        .mic-btn.active {
+            border-color: var(--green);
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+
+        .mic-btn.active .mic-icon {
+            fill: var(--green);
+        }
+
+        .mic-btn .pulse {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid var(--accent);
+            opacity: 0;
+            animation: none;
+        }
+
+        .mic-btn.active .pulse {
+            animation: pulse 1.5s ease-out infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 0.6;
+            }
+
+            100% {
+                transform: scale(1.6);
+                opacity: 0;
+            }
+        }
+
+        .mic-icon {
+            width: 48px;
+            height: 48px;
+            fill: var(--accent);
+            transition: fill 0.3s;
+        }
+
+        .btn-label {
+            font-size: 0.9rem;
+            color: var(--muted);
+            margin-bottom: 32px;
+            text-align: center;
+        }
+
+        .viz {
+            width: 100%;
+            max-width: 400px;
+            height: 60px;
+            background: var(--card);
+            border-radius: 12px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .viz canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .log-area {
+            width: 100%;
+            max-width: 400px;
+            background: var(--card);
+            border-radius: 12px;
+            padding: 12px 16px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.7rem;
+            color: var(--muted);
+            max-height: 150px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+
+        .footer {
+            margin-top: auto;
+            padding-top: 20px;
+            font-size: 0.7rem;
+            color: #475569;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>🎧 Vision Assist</h1>
+    <p class="subtitle">Phone Mic — Bluetooth Headphones</p>
+
+    <div class="status-bar">
+        <div class="status-item">
+            <div class="dot" id="wsDot"></div>
+            <span id="wsLabel">Server</span>
+        </div>
+        <div class="status-item">
+            <div class="dot" id="micDot"></div>
+            <span>Mic</span>
+        </div>
+        <div class="status-item">
+            <div class="dot" id="aiDot"></div>
+            <span>AI</span>
+        </div>
+    </div>
+
+    <div class="mic-btn" id="micBtn" onclick="toggleMic()">
+        <div class="pulse"></div>
+        <svg class="mic-icon" viewBox="0 0 24 24">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+            <path
+                d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+        </svg>
+    </div>
+    <p class="btn-label" id="btnLabel">Tap to connect & start</p>
+
+    <div class="viz">
+        <canvas id="vizCanvas"></canvas>
+    </div>
+
+    <div class="log-area" id="logArea">
+        Waiting to start...<br>
+    </div>
+
+    <div class="footer">Connect BT headphones first, then tap the mic button.</div>
+
+    <script>
+        // ---- Configuration ----
+        // ---- Configuration ----
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const port = window.location.port;
+        const WS_URL = `${protocol}//${window.location.hostname}:${port}/ws/phone`;
+        const width = 320;
+        const height = 240;
+        const SAMPLE_RATE = 16000;
+        const BUFFER_SIZE = 4096;
+
+        // Protocol
+        const MSG_AUDIO_IN = 0x01;
+        const MSG_AUDIO_OUT = 0x03;
+        const MSG_STATUS = 0x04;
+
+        // ---- State ----
+        let ws = null;
+        let audioCtx = null;
+        let micStream = null;
+        let micProcessor = null;
+        let isActive = false;
+        let playbackCtx = null;
+        let nextPlayTime = 0;
+
+        // ---- UI Elements ----
+        const micBtn = document.getElementById('micBtn');
+        const btnLabel = document.getElementById('btnLabel');
+        const wsDot = document.getElementById('wsDot');
+        const micDot = document.getElementById('micDot');
+        const aiDot = document.getElementById('aiDot');
+        const logArea = document.getElementById('logArea');
+        const vizCanvas = document.getElementById('vizCanvas');
+        const vizCtx = vizCanvas.getContext('2d');
+
+        // ---- Logging ----
+        function log(msg) {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            logArea.innerHTML += `<span style="color:#6366f1">${time}</span> ${msg}<br>`;
+            logArea.scrollTop = logArea.scrollHeight;
+            console.log(msg);
+        }
+
+        // ---- Audio Visualization ----
+        let analyser = null;
+        function setupViz() {
+            vizCanvas.width = vizCanvas.offsetWidth * 2;
+            vizCanvas.height = vizCanvas.offsetHeight * 2;
+        }
+        function drawViz() {
+            if (!analyser) {
+                vizCtx.clearRect(0, 0, vizCanvas.width, vizCanvas.height);
+                requestAnimationFrame(drawViz);
+                return;
+            }
+            const bufLen = analyser.frequencyBinCount;
+            const data = new Uint8Array(bufLen);
+            analyser.getByteTimeDomainData(data);
+
+            vizCtx.fillStyle = '#1a1a24';
+            vizCtx.fillRect(0, 0, vizCanvas.width, vizCanvas.height);
+            vizCtx.lineWidth = 2;
+            vizCtx.strokeStyle = isActive ? '#22c55e' : '#6366f1';
+            vizCtx.beginPath();
+
+            const sliceWidth = vizCanvas.width / bufLen;
+            let x = 0;
+            for (let i = 0; i < bufLen; i++) {
+                const v = data[i] / 128.0;
+                const y = (v * vizCanvas.height) / 2;
+                if (i === 0) vizCtx.moveTo(x, y);
+                else vizCtx.lineTo(x, y);
+                x += sliceWidth;
+            }
+            vizCtx.lineTo(vizCanvas.width, vizCanvas.height / 2);
+            vizCtx.stroke();
+            requestAnimationFrame(drawViz);
+        }
+
+        // ---- WebSocket ----
+        function connectWS() {
+            log('Connecting to server...');
+            ws = new WebSocket(WS_URL);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                wsDot.classList.add('on');
+                log('✅ Connected to server');
+            };
+
+            ws.onclose = () => {
+                wsDot.classList.remove('on');
+                aiDot.classList.remove('on');
+                log('❌ Disconnected from server');
+                // Auto-reconnect if still active
+                if (isActive) setTimeout(connectWS, 3000);
+            };
+
+            ws.onerror = (e) => {
+                log('⚠️ WebSocket error');
+            };
+
+            ws.onmessage = (event) => {
+                if (event.data instanceof ArrayBuffer) {
+                    const arr = new Uint8Array(event.data);
+                    if (arr.length < 2) return;
+
+                    const msgType = arr[0];
+                    const payload = arr.slice(1);
+
+                    if (msgType === MSG_AUDIO_OUT) {
+                        // Audio response from Gemini — play through BT headphones
+                        playAudio(payload);
+                        aiDot.classList.add('on');
+                        setTimeout(() => aiDot.classList.remove('on'), 500);
+                    } else if (msgType === MSG_STATUS) {
+                        const text = new TextDecoder().decode(payload);
+                        log(`🤖 ${text}`);
+                    }
+                }
+            };
+        }
+
+        // ---- Microphone Capture ----
+        async function startMic() {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    }
+                });
+
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: SAMPLE_RATE,
+                });
+
+                const source = audioCtx.createMediaStreamSource(micStream);
+
+                // Analyser for visualization
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+
+                // ScriptProcessor to get raw PCM
+                micProcessor = audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
+                micProcessor.onaudioprocess = (e) => {
+                    if (!isActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+                    const float32 = e.inputBuffer.getChannelData(0);
+                    // Convert float32 [-1,1] → int16
+                    const int16 = new Int16Array(float32.length);
+                    for (let i = 0; i < float32.length; i++) {
+                        let s = Math.max(-1, Math.min(1, float32[i]));
+                        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+
+                    // Build message: [0x01] + [PCM bytes]
+                    const msg = new Uint8Array(1 + int16.byteLength);
+                    msg[0] = MSG_AUDIO_IN;
+                    msg.set(new Uint8Array(int16.buffer), 1);
+                    ws.send(msg.buffer);
+                };
+
+                source.connect(micProcessor);
+                micProcessor.connect(audioCtx.destination);  // needed for processing to work
+
+                micDot.classList.add('on');
+                log('🎤 Microphone active (use BT headphones for best results)');
+                return true;
+            } catch (err) {
+                log(`⚠️ Mic error: ${err.message}`);
+                return false;
+            }
+        }
+
+        function stopMic() {
+            if (micProcessor) { micProcessor.disconnect(); micProcessor = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+            if (micStream) {
+                micStream.getTracks().forEach(t => t.stop());
+                micStream = null;
+            }
+            analyser = null;
+            micDot.classList.remove('on');
+            log('🎤 Microphone stopped');
+        }
+
+        // ---- Audio Playback (Gemini responses → BT headphones) ----
+        function playAudio(pcmBytes) {
+            if (!playbackCtx) {
+                playbackCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 24000,  // Gemini Live output rate
+                });
+                nextPlayTime = playbackCtx.currentTime;
+            }
+
+            // pcmBytes is int16 PCM at 24 kHz
+            const int16 = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength / 2);
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) {
+                float32[i] = int16[i] / 32768.0;
+            }
+
+            const audioBuffer = playbackCtx.createBuffer(1, float32.length, 24000);
+            audioBuffer.getChannelData(0).set(float32);
+
+            const source = playbackCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(playbackCtx.destination);
+
+            // Schedule seamless playback
+            const now = playbackCtx.currentTime;
+            if (nextPlayTime < now) nextPlayTime = now;
+            source.start(nextPlayTime);
+            nextPlayTime += audioBuffer.duration;
+        }
+
+        // ---- Toggle ----
+        async function toggleMic() {
+            if (isActive) {
+                // Stop
+                isActive = false;
+                micBtn.classList.remove('active');
+                btnLabel.textContent = 'Tap to start';
+                stopMic();
+                if (ws) { ws.close(); ws = null; }
+                wsDot.classList.remove('on');
+            } else {
+                // Start
+                btnLabel.textContent = 'Starting...';
+                connectWS();
+
+                // Wait for WS connection
+                await new Promise(resolve => {
+                    const check = setInterval(() => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            clearInterval(check);
+                            resolve();
+                        }
+                    }, 200);
+                    // Timeout after 10s
+                    setTimeout(() => { clearInterval(check); resolve(); }, 10000);
+                });
+
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    btnLabel.textContent = 'Connection failed — tap to retry';
+                    log('❌ Could not connect to server');
+                    return;
+                }
+
+                const micOk = await startMic();
+                if (!micOk) {
+                    btnLabel.textContent = 'Mic access denied — tap to retry';
+                    return;
+                }
+
+                isActive = true;
+                micBtn.classList.add('active');
+                btnLabel.textContent = 'Listening... tap to stop';
+            }
+        }
+
+        // ---- Init ----
+        setupViz();
+        drawViz();
+        window.addEventListener('resize', setupViz);
+
+        // Keep screen on (if supported)
+        if ('wakeLock' in navigator) {
+            navigator.wakeLock.request('screen').catch(() => { });
+        }
+    </script>
+</body>
+
+</html>
