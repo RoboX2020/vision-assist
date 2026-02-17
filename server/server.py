@@ -34,6 +34,20 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
+from collections import deque
+
+# Third-party libraries
+import cv2                  # OpenCV for image processing
+import numpy as np          # Matrix operations for images
+from aiohttp import web     # Async HTTP server framework
+from rt_mixer import RTMixer # Audio mixer for combining streams
+from google import genai    # Google Gemini API client
+from google.genai import types
+from dotenv import load_dotenv # For loading environment variables from .env
+
+# Local modules (Custom engines)
+from face_engine import FaceEngine   # Handles face recognition
+from object_engine import ObjectEngine # Handles object detection (YOLO)
 
 # Load .env file
 env_path = Path(__file__).parent / ".env"
@@ -41,14 +55,6 @@ if env_path.exists():
     load_dotenv(env_path)
 else:
     print("⚠️  No .env file found. Copy .env.example to .env and add your API key.")
-
-import websockets
-import aiohttp
-from aiohttp import web
-from google import genai
-import ssl
-from face_engine import FaceEngine
-from object_engine import ObjectEngine
 
 # ---- Configuration ----
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -518,24 +524,32 @@ async def close_gemini_session():
 # ESP32 WebSocket Handler (Camera Only)
 # ============================================================
 async def handle_esp32(websocket):
-    """Handle WebSocket connection from ESP32 — video frames only."""
+    """
+    Handle WebSocket connection from ESP32 — video frames only.
+    
+    Responsibilities:
+    1. Receive VIDEO frames from ESP32.
+    2. Broadcast connection status to Dashboard/Phone.
+    3. Forward frames to Gemini API (selectively).
+    4. Store latest frame for Face/Object detection tasks.
+    """
     state.esp32_ws = websocket
     state.esp32_connected = True
     client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
     log.info(f"📷 ESP32 camera connected from {client_ip}")
     state.add_log(f"ESP32 camera connected from {client_ip}")
 
-    # Send welcome
+    # Send welcome handshake
     welcome = bytes([MSG_TYPE_STATUS]) + b"Connected - camera streaming mode"
     await websocket.send(welcome)
 
-    # Start Gemini if phone is already connected
+    # Start Gemini session if phone is already connected (we need audio I/O)
     session = await ensure_gemini_session()
     if not session:
         error_msg = bytes([MSG_TYPE_STATUS]) + b"ERROR: Gemini API not available"
         await websocket.send(error_msg)
 
-    # Notify phone
+    # Notify phone that camera is ready
     if state.phone_ws:
         try:
             status = bytes([MSG_TYPE_STATUS]) + b"ESP32 camera connected"
@@ -545,17 +559,18 @@ async def handle_esp32(websocket):
 
     try:
         async for message in websocket:
+            # Process binary messages (Video Frames)
             if isinstance(message, bytes) and len(message) > 1:
                 msg_type = message[0]
                 payload = message[1:]
 
                 if msg_type == MSG_TYPE_VIDEO_IN:
-                    # Always store latest frame for dashboard
+                    # 1. State Update: Store for Dashboard & AI Tasks
                     state.last_frame = payload
                     state.frames_received += 1
                     state.last_frame_time = time.time()
 
-                    # Smart sampling: only send to Gemini if needed
+                    # 2. Gemini Stream: Smart sampling (don't send every frame)
                     if state.gemini_session and should_send_frame_to_gemini(len(payload)):
                         await send_video_to_gemini(state.gemini_session, payload)
                     else:
@@ -570,10 +585,11 @@ async def handle_esp32(websocket):
         log.error(f"ESP32 handler error: {e}")
         state.add_log(f"ERROR: {e}")
     finally:
+        # Cleanup
         state.esp32_ws = None
         state.esp32_connected = False
 
-        # Only close Gemini if phone is also disconnected
+        # Close Gemini if phone also gone (save API costs)
         if not state.phone_connected:
             await close_gemini_session()
 
@@ -584,7 +600,15 @@ async def handle_esp32(websocket):
 # Phone WebSocket Handler (Audio I/O via BT Headphones)
 # ============================================================
 async def handle_phone_ws(request):
-    """Handle Phone WebSocket connection via aiohttp (Same Port)."""
+    """
+    Handle Phone WebSocket connection via aiohttp (Same Port).
+    
+    Responsibilities:
+    1. Receive AUDIO (Mic) from Phone/BT Headphones.
+    2. Forward Audio to Gemini.
+    3. Receive AUDIO (TTS) from Gemini and forward to Phone.
+    4. Provide Dashboard/Status logs.
+    """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
@@ -593,31 +617,24 @@ async def handle_phone_ws(request):
     state.add_log("📱 Phone connected via aiohttp WS")
     log.info("📱 Phone connected via aiohttp WS")
 
-    # Send welcome
-    welcome = bytes([MSG_TYPE_STATUS]) + b"Connected - audio via BT headphones"
-    try:
-        await ws.send_bytes(welcome)
-    except Exception:
-        pass
-
+    # Start Gemini (if ESP32 is here, or just for testing)
+    session = await ensure_gemini_session()
+    
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.BINARY:
                 data = msg.data
-                if len(data) < 1:
-                    continue
-
-                msg_type = data[0]
-                payload = data[1:]
-
-                if msg_type == MSG_TYPE_AUDIO_IN:
-                    # Audio from Phone Mic
-                    if state.gemini_session:
-                        await send_audio_to_gemini(state.gemini_session, payload)
-                
+                if len(data) > 1:
+                    # Audio Input (Mic) -> Gemini
+                    if data[0] == MSG_TYPE_AUDIO_IN:
+                        pcm_data = data[1:]
+                        if session:
+                           await session.send(input={"data": pcm_data, "mime_type": "audio/pcm"}, end_of_turn=False)
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 log.error(f"Phone WS connection closed with exception {ws.exception()}")
 
+    except Exception as e:
+        log.error(f"Phone WS Error: {e}")
     finally:
         state.phone_connected = False
         state.phone_ws = None

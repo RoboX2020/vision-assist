@@ -115,34 +115,45 @@ bool initCamera() {
   return true;
 }
 
+// ----------------------------------------------------------------
+// Capture and Send Frame
+// ----------------------------------------------------------------
 void captureAndSendFrame() {
+  // 1. Capture Frame from Camera
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("[Camera] Capture failed");
     return;
   }
 
+  // Ensure it's JPEG (we only stream JPEG)
   if (fb->format != PIXFORMAT_JPEG) {
     Serial.println("[Camera] Not JPEG format");
     esp_camera_fb_return(fb);
     return;
   }
 
-  // Build message: [0x02] + [JPEG bytes]
+  // 2. Prepare WebSocket Message
+  // Format: [0x02] + [JPEG Data...]
   size_t msgLen = 1 + fb->len;
+  
+  // Allocate buffer in PSRAM (SPIRAM) because Internal RAM is too small for images
   uint8_t *msg = (uint8_t *)heap_caps_malloc(msgLen, MALLOC_CAP_SPIRAM);
   if (!msg) {
-     msg = (uint8_t *)malloc(msgLen); // Fallback
+     msg = (uint8_t *)malloc(msgLen); // Fallback to internal RAM (likely fails for large frames)
   }
   
   if (msg) {
-    msg[0] = MSG_TYPE_VIDEO_IN;
-    memcpy(msg + 1, fb->buf, fb->len);
-    webSocket.sendBIN(msg, msgLen);
-    // Serial.printf("[Camera] Sent frame: %u bytes\n", fb->len); // Reduce noise
-    free(msg);
+    msg[0] = MSG_TYPE_VIDEO_IN; // Header byte
+    memcpy(msg + 1, fb->buf, fb->len); // Copy image data
+    
+    // 3. Send via WebSocket
+    webSocket.sendBIN(msg, msgLen); 
+    
+    free(msg); // Free buffer
   }
 
+  // 4. Return frame buffer to driver for reuse
   esp_camera_fb_return(fb);
 }
 
@@ -204,65 +215,39 @@ void connectWebSocket() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n========================================");
+  Serial.println("\n\n========================================");
   Serial.println("  Vision Assist — ESP32-S3 Camera");
   Serial.println("  Audio via Phone BT Headphones");
-  Serial.println("========================================\n");
+  Serial.println("========================================");
 
-  // LED
   pinMode(LED_PIN, OUTPUT);
-  ledOff();
+  ledOn(); // Indicator: Booting
 
-  // WiFi
-  if (!connectWiFi()) {
-    Serial.println("[FATAL] WiFi failed. Restarting in 5s...");
-    ledBlink(10, 100);
-    delay(5000);
-    ESP.restart();
-  }
-  ledBlink(2, 300);
-
-  // Camera
+  // 1. Initialize Camera
   if (!initCamera()) {
     Serial.println("[FATAL] Camera init failed. Restarting in 5s...");
-    ledBlink(10, 100);
     delay(5000);
     ESP.restart();
   }
 
-  // WebSocket
-  connectWebSocket();
+  // 2. Connect to WiFi
+  if (!connectWiFi()) {
+    Serial.println("[FATAL] WiFi failed. Restarting in 5s...");
+    delay(5000);
+    ESP.restart();
+  }
 
-  Serial.println("\n[Ready] Camera initialized!");
-  Serial.println("[Ready] Audio handled by phone BT headphones.");
-  Serial.println("[Ready] Waiting for server connection...\n");
+  // 3. Connect to Server WebSocket
+  connectWebSocket();
 }
 
 // ============================================================
 // Main Loop
 // ============================================================
 void loop() {
-  // Handle WebSocket events
+  // A. Handle WebSocket events (Keepalive, Receive text, etc.)
   webSocket.loop();
 
-  // Check WiFi health
-  if (millis() - lastWifiCheck > 5000) {
-    lastWifiCheck = millis();
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[WiFi] Lost connection, reconnecting...");
-      ledOff();
-      connectWiFi();
-      connectWebSocket();
-    }
-  }
-
-  if (wsConnected) {
-    // Capture and send camera frame at configured interval
-    if (millis() - lastFrameTime >= CAMERA_CAPTURE_INTERVAL_MS) {
-      lastFrameTime = millis();
-      captureAndSendFrame();
-    }
   }
 
   // Small yield to prevent watchdog reset
