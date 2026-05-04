@@ -35,6 +35,8 @@ if env_path.exists():
     load_dotenv(env_path)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 GEMINI_MODEL   = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-latest")
 HTTP_PORT      = int(os.environ.get("PORT", 8080))
 HTTPS_PORT     = int(os.environ.get("HTTPS_PORT", 8443))
@@ -166,6 +168,7 @@ class ServerState:
         self.last_frame_hash: str = ""
         self.last_frame_time = 0.0
         self.last_transcript = ""
+        self.tts_buffer = ""
         self.status_log: list[dict] = []
         self.start_time = time.time()
 
@@ -274,7 +277,7 @@ async def start_gemini_session():
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     config = {
-        "response_modalities": ["AUDIO"],
+        "response_modalities": ["TEXT"] if ELEVENLABS_API_KEY else ["AUDIO"],
         "system_instruction": build_system_instruction(state.memory),
         "tools": TOOLS,
     }
@@ -414,6 +417,35 @@ _AUTH_PAT  = re.compile(r"\b(401|403|api[_ ]?key|invalid.*key|unauthor)", re.I)
 _QUOTA_PAT = re.compile(r"\b(429|quota|rate.?limit)", re.I)
 
 
+async def elevenlabs_tts_worker(text: str, ws: web.WebSocketResponse):
+    if not text.strip() or not ELEVENLABS_API_KEY or ws is None or ws.closed:
+        return
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream?output_format=pcm_24000"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "text": text,
+        "model_id": "eleven_turbo_v2_5",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=data) as resp:
+                if resp.status == 200:
+                    async for chunk in resp.content.iter_chunked(4096):
+                        if ws and not ws.closed:
+                            try:
+                                await ws.send_bytes(bytes([MSG_TYPE_AUDIO_OUT]) + chunk)
+                            except Exception:
+                                break
+                else:
+                    err = await resp.text()
+                    log.error(f"ElevenLabs TTS failed: {resp.status} {err}")
+    except Exception as e:
+        log.error(f"ElevenLabs TTS error: {e}")
+
+
 async def receive_from_gemini(session):
     try:
         while True:
@@ -432,13 +464,32 @@ async def receive_from_gemini(session):
                                     log.error(f"send to phone: {e}")
                         if part.text:
                             state.last_transcript = part.text
-                            state.add_log(f"AI: {part.text[:100]}")
+                            if not ELEVENLABS_API_KEY:
+                                state.add_log(f"AI: {part.text[:100]}")
+                            else:
+                                state.tts_buffer += part.text
+                                # Basic sentence chunking for TTS
+                                match = re.search(r'([.?!])\s+|\n', state.tts_buffer)
+                                if match:
+                                    idx = match.end()
+                                    sentence = state.tts_buffer[:idx]
+                                    state.tts_buffer = state.tts_buffer[idx:]
+                                    if sentence.strip():
+                                        state.add_log(f"AI: {sentence.strip()[:100]}")
+                                        asyncio.create_task(elevenlabs_tts_worker(sentence.strip(), state.phone_ws))
 
                 if response.tool_call:
                     await handle_tool_call(session, response.tool_call)
 
                 if response.server_content and response.server_content.interrupted:
                     log.info("Response interrupted")
+                    
+            # Flush remaining TTS buffer at the end of turn
+            if ELEVENLABS_API_KEY and getattr(state, "tts_buffer", "").strip():
+                text_to_speak = state.tts_buffer.strip()
+                state.tts_buffer = ""
+                state.add_log(f"AI: {text_to_speak[:100]}")
+                asyncio.create_task(elevenlabs_tts_worker(text_to_speak, state.phone_ws))
 
     except asyncio.CancelledError:
         pass
