@@ -3,8 +3,22 @@ __pycache__/
 .env
 *.pyc
 .DS_Store
+
+# Runtime data — never commit these
 server/faces.json
 server/memory.json
+server/user_profile.json
 server/medical_profile.txt
+server/server_ip.txt
+server/server.pid
+server/server.crt
+server/server.key
+server/cert.pem
+server/key.pem
+
+# ESP32 secrets
 esp32_firmware/config.h
+
+# Logs
 *.log
+monitor.log

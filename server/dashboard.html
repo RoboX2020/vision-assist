@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +8,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
         :root {
             --bg-primary: #0a0a0f;
@@ -150,8 +155,15 @@
         }
 
         @keyframes pulse {
-            0%, 100% { box-shadow: 0 0 8px rgba(34, 204, 136, 0.4); }
-            50% { box-shadow: 0 0 20px rgba(34, 204, 136, 0.7); }
+
+            0%,
+            100% {
+                box-shadow: 0 0 8px rgba(34, 204, 136, 0.4);
+            }
+
+            50% {
+                box-shadow: 0 0 20px rgba(34, 204, 136, 0.7);
+            }
         }
 
         .status-info h3 {
@@ -177,7 +189,9 @@
         }
 
         @media (max-width: 768px) {
-            .main-grid { grid-template-columns: 1fr; }
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         .card {
@@ -353,8 +367,13 @@
             word-break: break-word;
         }
 
-        .log-msg.error { color: var(--accent-red); }
-        .log-msg.gemini { color: var(--accent-green); }
+        .log-msg.error {
+            color: var(--accent-red);
+        }
+
+        .log-msg.gemini {
+            color: var(--accent-green);
+        }
 
         /* Footer */
         .footer {
@@ -366,15 +385,31 @@
 
         /* Animations */
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(8px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
-        .card { animation: fadeIn 0.5s ease-out; }
-        .card:nth-child(2) { animation-delay: 0.1s; }
-        .card:nth-child(3) { animation-delay: 0.2s; }
+        .card {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        .card:nth-child(2) {
+            animation-delay: 0.1s;
+        }
+
+        .card:nth-child(3) {
+            animation-delay: 0.2s;
+        }
     </style>
 </head>
+
 <body>
     <div class="container">
         <!-- Header -->
@@ -383,7 +418,7 @@
                 <div class="logo">👁️</div>
                 <h1>
                     Vision Assist
-                    <span>ESP32-S3 + Gemini Live</span>
+                    <span id="ai-name-label">ESP32-S3 + Gemini Live</span>
                 </h1>
             </div>
             <div class="uptime" id="uptime">Uptime: --:--:--</div>
@@ -536,6 +571,11 @@
             document.getElementById('uptime').textContent = `Uptime: ${uptimeStr}`;
             document.getElementById('stat-uptime').textContent = uptimeStr;
 
+            // AI Name
+            if (data.ai_name) {
+                document.getElementById('ai-name-label').textContent = `AI: ${data.ai_name} • Sessions: ${data.total_sessions || 0}`;
+            }
+
             // Transcript
             const transcriptEl = document.getElementById('transcript');
             if (data.last_transcript) {
@@ -593,4 +633,5 @@
         refreshFrame();
     </script>
 </body>
+
 </html>

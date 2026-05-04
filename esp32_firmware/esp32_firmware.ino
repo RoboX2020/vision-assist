@@ -15,12 +15,14 @@
 // ============================================================
 
 #include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <ArduinoWebsockets.h> // Switch to ArduinoWebsockets lib
 #include "esp_camera.h"
 #include "config.h"
 
+using namespace websockets;
+
 // ---- Global Objects ----
-WebSocketsClient webSocket;
+WebsocketsClient client;
 
 // ---- State ----
 volatile bool wsConnected = false;
@@ -46,11 +48,12 @@ void ledBlink(int times, int ms) {
 bool connectWiFi() {
   Serial.printf("[WiFi] Connecting to %s ...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  // WiFi.setTxPower(WIFI_POWER_19_5dBm); // Commented out to save power/prevent brownout
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
-    if (millis() - start > WIFI_CONNECT_TIMEOUT_MS) {
+    if (millis() - start > 20000) { // 20s timeout
       Serial.println("[WiFi] Connection timeout!");
       return false;
     }
@@ -66,6 +69,7 @@ bool connectWiFi() {
 // Camera (OV2640)
 // ============================================================
 bool initCamera() {
+  // Configure the Camera Interface (DVP)
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer   = LEDC_TIMER_0;
@@ -85,13 +89,15 @@ bool initCamera() {
   config.pin_sccb_scl = CAM_PIN_SIOC;
   config.pin_pwdn     = CAM_PIN_PWDN;
   config.pin_reset    = CAM_PIN_RESET;
-  config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_JPEG;
+  config.xclk_freq_hz = 20000000;      // 20MHz XCLK
+  config.pixel_format = PIXFORMAT_JPEG; // Output JPEG directly from sensor
+  
+  // Settings from config.h
   config.frame_size   = CAMERA_FRAME_SIZE;
   config.jpeg_quality = CAMERA_JPEG_QUALITY;
   config.fb_count     = CAMERA_FB_COUNT;
-  config.fb_location  = CAMERA_FB_IN_PSRAM;
-  config.grab_mode    = CAMERA_GRAB_LATEST;
+  config.fb_location  = CAMERA_FB_IN_PSRAM; // Use External RAM (SPIRAM) for buffers
+  config.grab_mode    = CAMERA_GRAB_LATEST; // Always get the freshest frame
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -119,95 +125,92 @@ bool initCamera() {
 // Capture and Send Frame
 // ----------------------------------------------------------------
 void captureAndSendFrame() {
-  // 1. Capture Frame from Camera
+  // 1. Get Frame Buffer from Driver
   camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) {
-    Serial.println("[Camera] Capture failed");
-    return;
-  }
+  if (!fb) return;
 
-  // Ensure it's JPEG (we only stream JPEG)
+  // 2. Verify Format (Must be JPEG)
   if (fb->format != PIXFORMAT_JPEG) {
-    Serial.println("[Camera] Not JPEG format");
     esp_camera_fb_return(fb);
     return;
   }
 
-  // 2. Prepare WebSocket Message
-  // Format: [0x02] + [JPEG Data...]
+  // 3. Allocate Message Buffer
+  // Protocol: [1 byte Type] + [JPEG Data]
   size_t msgLen = 1 + fb->len;
   
-  // Allocate buffer in PSRAM (SPIRAM) because Internal RAM is too small for images
+  // Prefer PSRAM (SPIRAM) for large buffers
   uint8_t *msg = (uint8_t *)heap_caps_malloc(msgLen, MALLOC_CAP_SPIRAM);
-  if (!msg) {
-     msg = (uint8_t *)malloc(msgLen); // Fallback to internal RAM (likely fails for large frames)
-  }
+  if (!msg) msg = (uint8_t *)malloc(msgLen); // Fallback to internal RAM
   
   if (msg) {
-    msg[0] = MSG_TYPE_VIDEO_IN; // Header byte
-    memcpy(msg + 1, fb->buf, fb->len); // Copy image data
+    msg[0] = MSG_TYPE_VIDEO_IN;        // Header (0x02)
+    memcpy(msg + 1, fb->buf, fb->len); // Copy JPEG data
     
-    // 3. Send via WebSocket
-    webSocket.sendBIN(msg, msgLen); 
+    // 4. Send Packet via WebSocket
+    client.sendBinary((const char*)msg, msgLen); 
     
-    free(msg); // Free buffer
+    free(msg);
   }
-
-  // 4. Return frame buffer to driver for reuse
+  
+  // 5. Release Frame Buffer back to Driver
   esp_camera_fb_return(fb);
 }
 
 // ============================================================
-// WebSocket
+// WebSocket Events
 // ============================================================
-void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
-  switch (type) {
-    case WStype_DISCONNECTED:
-      wsConnected = false;
-      Serial.println("[WS] Disconnected");
-      ledBlink(3, 200);
-      break;
+void onMessageCallback(WebsocketsMessage message) {
+    if (message.isText()) {
+        Serial.printf("[WS] Text: %s\n", message.c_str());
+        return;
+    }
+    if (!message.isBinary()) return;
 
-    case WStype_CONNECTED:
-      wsConnected = true;
-      Serial.printf("[WS] Connected to %s\n", (char *)payload);
-      ledOn();
-      break;
+    const char* data = message.c_str();
+    size_t len = message.length();
+    if (len < 2 || data[0] != MSG_TYPE_STATUS) return;
 
-    case WStype_BIN:
-      if (length > 1) {
-        uint8_t msgType = payload[0];
-        if (msgType == MSG_TYPE_STATUS) {
-          // Status message from server
-          char statusMsg[256];
-          size_t copyLen = min(length - 1, (size_t)255);
-          memcpy(statusMsg, payload + 1, copyLen);
-          statusMsg[copyLen] = '\0';
-          Serial.printf("[Server] %s\n", statusMsg);
-        }
-      }
-      break;
+    // O(n) copy + single null terminator — avoids the String += in a loop
+    // that thrashed the heap on longer status messages.
+    size_t payloadLen = len - 1;
+    if (payloadLen > 250) payloadLen = 250; // bound stack alloc
+    char buf[251];
+    memcpy(buf, data + 1, payloadLen);
+    buf[payloadLen] = '\0';
+    Serial.printf("[Server] %s\n", buf);
+}
 
-    case WStype_TEXT:
-      Serial.printf("[WS] Text: %s\n", (char *)payload);
-      break;
-
-    case WStype_ERROR:
-      Serial.println("[WS] Error!");
-      break;
-
-    case WStype_PING:
-    case WStype_PONG:
-      break;
-  }
+void onEventsCallback(WebsocketsEvent event, String data) {
+    if(event == WebsocketsEvent::ConnectionOpened) {
+        Serial.println("[WS] Connected to Server");
+        wsConnected = true;
+        ledOn();
+    } else if(event == WebsocketsEvent::ConnectionClosed) {
+        Serial.println("[WS] Disconnected");
+        wsConnected = false;
+        ledBlink(3, 200);
+    }
 }
 
 void connectWebSocket() {
-  Serial.printf("[WS] Connecting to %s:%d%s\n", SERVER_HOST, SERVER_PORT, SERVER_PATH);
-  webSocket.begin(SERVER_HOST, SERVER_PORT, SERVER_PATH);
-  webSocket.onEvent(webSocketEvent);
-  webSocket.setReconnectInterval(WEBSOCKET_RECONNECT_INTERVAL_MS);
-  webSocket.enableHeartbeat(15000, 3000, 2);  // ping every 15s
+    // Build path — append auth token if configured
+    String path = SERVER_PATH;
+    if (strlen(SERVER_TOKEN) > 0) {
+        path += "?token=";
+        path += SERVER_TOKEN;
+    }
+    Serial.printf("[WS] Connecting to ws://%s:%d%s\n", SERVER_HOST, SERVER_PORT, path.c_str());
+
+    client.onMessage(onMessageCallback);
+    client.onEvent(onEventsCallback);
+
+    bool connected = client.connect(SERVER_HOST, SERVER_PORT, path.c_str());
+    if (connected) {
+        Serial.println("[WS] Connection Successful!");
+    } else {
+        Serial.println("[WS] Connection Failed.");
+    }
 }
 
 // ============================================================
@@ -215,41 +218,50 @@ void connectWebSocket() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n\n========================================");
-  Serial.println("  Vision Assist — ESP32-S3 Camera");
-  Serial.println("  Audio via Phone BT Headphones");
-  Serial.println("========================================");
+  Serial.println("\n\n== Vision Assist (ArduinoWebsockets) ==");
 
   pinMode(LED_PIN, OUTPUT);
-  ledOn(); // Indicator: Booting
+  ledOn();
 
-  // 1. Initialize Camera
+  // 1. Init Camera
   if (!initCamera()) {
-    Serial.println("[FATAL] Camera init failed. Restarting in 5s...");
-    delay(5000);
-    ESP.restart();
+    Serial.println("[FATAL] Camera init failed");
+    delay(5000); ESP.restart();
   }
 
-  // 2. Connect to WiFi
+  // 2. WiFi
   if (!connectWiFi()) {
-    Serial.println("[FATAL] WiFi failed. Restarting in 5s...");
-    delay(5000);
-    ESP.restart();
+    Serial.println("[FATAL] WiFi failed");
+    delay(5000); ESP.restart();
   }
 
-  // 3. Connect to Server WebSocket
+  // 3. WS
   connectWebSocket();
 }
 
 // ============================================================
-// Main Loop
+// Loop
 // ============================================================
 void loop() {
-  // A. Handle WebSocket events (Keepalive, Receive text, etc.)
-  webSocket.loop();
+  client.poll(); // Keepalive
 
+  unsigned long now = millis();
+
+  // Reconnect if lost
+  if (!client.available() && (now - lastWifiCheck > 5000)) {
+      lastWifiCheck = now;
+      if (WiFi.status() == WL_CONNECTED) {
+          Serial.println("[WS] Reconnecting...");
+          connectWebSocket();
+      } else {
+          Serial.println("[WiFi] Reconnecting...");
+          WiFi.reconnect();
+      }
   }
 
-  // Small yield to prevent watchdog reset
-  delay(1);
+  // Capture Frame
+  if (client.available() && (now - lastFrameTime > CAMERA_CAPTURE_INTERVAL_MS)) {
+    captureAndSendFrame();
+    lastFrameTime = now;
+  }
 }

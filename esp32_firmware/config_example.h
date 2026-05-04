@@ -11,11 +11,16 @@
 #define WIFI_PASSWORD   "12345678"
 
 // ---- Relay Server ----
-// IP address of the Mac running server.py (on the same hotspot network)
-// Find it with: ifconfig | grep "inet " on your Mac
+// Local (hotspot): IP address of the Mac running server.py
+//   Find it with: ifconfig | grep "inet " on your Mac
+// Cloud (Fly.io):  your-app-name.fly.dev
 #define SERVER_HOST     "172.20.10.11"
-#define SERVER_PORT     8765
+#define SERVER_PORT     8080
 #define SERVER_PATH     "/ws/esp32"
+
+// Auth token — must match AUTH_TOKEN env var on the server.
+// Leave empty ("") if AUTH_TOKEN is not set on the server.
+#define SERVER_TOKEN    ""
 
 // ---- Camera (OV2640) ----
 // XIAO ESP32S3 Sense camera pins (do NOT change unless different board)

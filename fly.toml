@@ -1,0 +1,36 @@
+# Fly.io deployment config for Vision Assist
+# Deploy with: fly deploy
+# First-time setup: see DEPLOY.md
+
+app            = "vision-assist"
+primary_region = "ord"   # Chicago — change to closest region (sin, lhr, syd, etc.)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT     = "8080"
+  DATA_DIR = "/data"
+
+[http_service]
+  internal_port       = 8080
+  force_https         = true          # Fly.io terminates TLS — phone mic needs HTTPS
+  auto_stop_machines  = false         # Keep alive 24/7 (always-on)
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 10
+    soft_limit = 5
+
+# Persistent volume for user_profile.json and faces.json
+[[mounts]]
+  source      = "vision_assist_data"
+  destination = "/data"
+
+# Health check — Fly.io uses this to confirm the app is up
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
