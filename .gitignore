@@ -22,3 +22,8 @@ esp32_firmware/config.h
 # Logs
 *.log
 monitor.log
+*.pem
+*.key
+*.crt
+server.pid
+.env
