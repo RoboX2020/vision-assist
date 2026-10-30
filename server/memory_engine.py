@@ -30,6 +30,8 @@ def _clean(text: str, limit: int = _MAX_TEXT) -> str:
 class MemoryEngine:
     """Manages persistent user profile data."""
 
+    # The starting profile for a brand-new user - and the template that
+    # guarantees every expected field always exists.
     DEFAULT_PROFILE = {
         "ai_name": "Buddy",
         "user_name": "",
@@ -64,6 +66,8 @@ class MemoryEngine:
                 with open(self.profile_path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                 # Merge over defaults so newly added fields don't crash callers.
+                # Merge the saved file over the defaults: an old profile file that is
+                # missing newer fields still gets them, so nothing downstream crashes.
                 self.profile = {**self.DEFAULT_PROFILE, **loaded}
                 log.info(f"Loaded user profile from {self.profile_path.name}")
                 return
@@ -80,6 +84,8 @@ class MemoryEngine:
 
     def _write_now(self):
         """Atomic write — never leave a partial file on disk."""
+        # Same temp-file-then-swap trick as the face engine: the profile on disk
+        # is never a half-written file.
         tmp = self.profile_path.with_suffix(self.profile_path.suffix + ".tmp")
         try:
             with self._lock:
@@ -138,9 +144,11 @@ class MemoryEngine:
         if not memory:
             return
         memories = self.profile.setdefault("important_memories", [])
+        # Don't store the exact same memory twice.
         if memory in memories:
             return
         memories.append(memory)
+        # Keep only the 100 most recent memories so the file stays small.
         if len(memories) > 100:
             self.profile["important_memories"] = memories[-100:]
         self._mark_dirty()
@@ -175,6 +183,7 @@ class MemoryEngine:
         if not topic:
             return
         liked = self.profile.setdefault("liked_topics", [])
+        # Case-insensitive check: 'Robotics' and 'robotics' are the same topic.
         if topic.lower() not in (t.lower() for t in liked):
             liked.append(topic)
             if len(liked) > 50:
@@ -209,6 +218,8 @@ class MemoryEngine:
 
         prefs = p.get("preferences") or {}
         if prefs:
+            # Only the first 10 preferences go into the AI prompt - it has a limited
+            # attention budget (tokens), so the summary stays compact.
             pref_str = ", ".join(f"{k}: {v}" for k, v in list(prefs.items())[:10])
             lines.append(f"- Preferences: {pref_str}")
 
@@ -228,4 +239,6 @@ class MemoryEngine:
         if sessions > 1:
             lines.append(f"- Sessions: {sessions}")
 
+        # Knowing nothing yet is a fine answer: the AI handles a first meeting
+        # gracefully.
         return "\n".join(lines) if lines else "First time meeting this user."

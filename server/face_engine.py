@@ -24,6 +24,8 @@ class FaceEngine:
     def __init__(self, data_dir=None, data_file="faces.json"):
         base = Path(data_dir) if data_dir else Path(__file__).parent
         self.data_file = base / data_file
+        # An 'encoding' is a 128-number fingerprint of a face. Two photos of the
+        # same person produce very similar fingerprints; different people don't.
         self.known_encodings: list[np.ndarray] = []
         self.known_names: list[str] = []
         self._fr = None                       # face_recognition module, lazy
@@ -54,12 +56,14 @@ class FaceEngine:
         try:
             with open(self.data_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # The file is a list of {'name': ..., 'encoding': [...]} pairs saved earlier.
             for entry in data:
                 name = entry.get("name")
                 enc = entry.get("encoding")
                 if not name or not enc:
                     continue
                 self.known_names.append(name)
+                # Turn the saved plain list of numbers back into a numpy array for fast math.
                 self.known_encodings.append(np.asarray(enc, dtype=np.float64))
             log.info(f"Loaded {len(self.known_names)} faces from {self.data_file.name}")
         except Exception as e:
@@ -70,6 +74,8 @@ class FaceEngine:
             {"name": n, "encoding": e.tolist()}
             for n, e in zip(self.known_names, self.known_encodings)
         ]
+        # Write to a temp file, then swap it over the real one: a crash mid-save
+        # can never leave a half-written, corrupted face database.
         tmp = self.data_file.with_suffix(self.data_file.suffix + ".tmp")
         try:
             with self._lock:
@@ -92,26 +98,37 @@ class FaceEngine:
         if not self._ensure_loaded():
             return []
         try:
+            # Decode the raw JPEG bytes from the camera into an image OpenCV can use.
             arr = np.frombuffer(jpeg_bytes, np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if img is None:
                 return []
 
+            # Find faces on a shrunken copy: much faster, and faces are still
+            # detectable at this size (locations get scaled back up implicitly
+            # because we only need names, not positions).
             small = cv2.resize(img, (0, 0), fx=DOWNSCALE, fy=DOWNSCALE)
             # cvtColor returns a fresh contiguous buffer dlib can use safely.
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
+            # model="hog" is the fast, CPU-friendly face finder - no GPU needed.
             locations = self._fr.face_locations(rgb, model="hog")
             if not locations:
                 return []
 
+            # Compute the 128-number fingerprint for each face that was found.
             encodings = self._fr.face_encodings(rgb, locations)
             names: list[str] = []
             for enc in encodings:
                 name = "Unknown"
                 if self.known_encodings:
+                    # Measure how different this face is from every remembered face
+                    # (0.0 would mean identical).
                     distances = self._fr.face_distance(self.known_encodings, enc)
+                    # argmin picks the remembered face with the smallest distance...
                     best = int(np.argmin(distances))
+                    # ...but only trust it if the match is close enough; otherwise the
+                    # person stays 'Unknown' rather than getting the wrong name.
                     if distances[best] < MATCH_THRESHOLD:
                         name = self.known_names[best]
                 names.append(name)
@@ -160,6 +177,7 @@ class FaceEngine:
             self.known_names.append(name)
             self.known_encodings.append(encoding)
 
+            # Over the cap? Drop the oldest entries to keep storage and matching fast.
             if len(self.known_names) > MAX_FACES:
                 self.known_names = self.known_names[-MAX_FACES:]
                 self.known_encodings = self.known_encodings[-MAX_FACES:]

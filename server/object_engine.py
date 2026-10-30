@@ -40,6 +40,8 @@ class ObjectEngine:
 
             # Run Interface
             # verbose=False prevents printing to stdout
+            # This one line runs the whole neural network: an image goes in, a list
+            # of boxes with labels and confidence scores comes out.
             results = self.model(img, verbose=False)
             
             detected_labels = []
@@ -48,6 +50,7 @@ class ObjectEngine:
 
             for r in results:
                 for box in r.boxes:
+                    # conf is how sure the model is (0 to 1). Below 50% we don't trust it.
                     conf = float(box.conf[0])
                     if conf < 0.5: continue  # Filter low confidence
                     
@@ -58,6 +61,8 @@ class ObjectEngine:
                         detected_labels.append(label)
                     
                     # Log to memory if cooldown passed
+                    # Remember the sighting in memory.json, but at most once every 10
+                    # seconds per object type, so a cup on the table isn't logged forever.
                     if self.should_log(label, current_time):
                         entry = {
                             "timestamp": current_time,
