@@ -268,6 +268,9 @@ def _safe_arg(args, key: str, limit: int = 200) -> str:
     return val.strip()[:limit]
 
 
+# Open a live session with Google's Gemini: the AI gets its system prompt
+# (who it is, what it knows about the user from memory) and the list of
+# "tools" it is allowed to ask this server to run.
 async def start_gemini_session():
     if not GEMINI_API_KEY:
         log.error("GEMINI_API_KEY not set — cannot connect to Gemini")
@@ -298,6 +301,7 @@ async def start_gemini_session():
         return None
 
 
+# One leg of the relay: raw microphone audio from the phone -> Gemini's ears.
 async def send_audio_to_gemini(session, pcm_data: bytes):
     """Forward a phone audio chunk straight to Gemini (low-latency path)."""
     if not pcm_data:
@@ -312,6 +316,7 @@ async def send_audio_to_gemini(session, pcm_data: bytes):
         log.error(f"send_audio: {e}")
 
 
+# The other leg: camera frames from the ESP32 glasses -> Gemini's eyes.
 async def send_video_to_gemini(session, jpeg_data: bytes):
     now = time.time()
     if now - state.last_gemini_send_time < GEMINI_FRAME_INTERVAL_S:
@@ -343,6 +348,9 @@ async def _respond(session, name: str, fc_id, text: str):
         log.error(f"tool response ({name}): {e}")
 
 
+# Gemini can ask the server to DO things mid-conversation ("remember this",
+# "describe what's ahead"). This dispatches each request to the right python
+# function and sends the result back so Gemini can speak it.
 async def handle_tool_call(session, tool_call):
     if not tool_call or not getattr(tool_call, "function_calls", None):
         return
@@ -417,6 +425,8 @@ _AUTH_PAT  = re.compile(r"\b(401|403|api[_ ]?key|invalid.*key|unauthor)", re.I)
 _QUOTA_PAT = re.compile(r"\b(429|quota|rate.?limit)", re.I)
 
 
+# Backup voice: when Gemini's own speech is unavailable, turn its text into
+# audio with ElevenLabs and stream that to the phone instead.
 async def elevenlabs_tts_worker(text: str, ws: web.WebSocketResponse):
     if not text.strip() or not ELEVENLABS_API_KEY or ws is None or ws.closed:
         return
@@ -446,6 +456,9 @@ async def elevenlabs_tts_worker(text: str, ws: web.WebSocketResponse):
         log.error(f"ElevenLabs TTS error: {e}")
 
 
+# The inbound pump: everything Gemini sends back (voice audio, text, tool
+# requests) arrives here and gets routed to the phone or the tool dispatcher.
+# Runs forever for the life of a session.
 async def receive_from_gemini(session):
     try:
         while True:
@@ -519,6 +532,8 @@ async def receive_from_gemini(session):
 # Face recognition
 # ------------------------------------------------------------
 
+# Background loop: scan recent camera frames for faces, match them against
+# remembered people, and tell Gemini who it is looking at ("that's Mom").
 async def face_recognition_task():
     """Recognize faces, greet new arrivals, expire old greetings."""
     seen_at: dict[str, float] = {}    # name -> last time greeted
@@ -567,6 +582,8 @@ async def face_recognition_task():
 # Reconnect / lifecycle
 # ------------------------------------------------------------
 
+# Keepalive: Gemini sessions drop after a while; this watches for a dead
+# session and quietly rebuilds it so the glasses always have a working AI.
 async def auto_reconnect_gemini():
     if state._reconnect_in_progress or state._auth_failed:
         return
@@ -636,6 +653,8 @@ async def close_gemini_session():
         state.gemini_connected = False
 
 
+# Housekeeping: when nobody has talked for a while, close the Gemini session
+# instead of paying to keep it open; it rebuilds on the next word or frame.
 async def idle_monitor_task():
     while True:
         try:
@@ -671,6 +690,8 @@ async def memory_flush_task():
 # WebSocket handlers
 # ============================================================
 
+# Entry point for the glasses: the ESP32 connects here over WebSocket and
+# starts streaming camera JPEG frames up, which we forward to Gemini.
 async def handle_esp32_ws(request: web.Request):
     deny = await _require_auth(request)
     if deny:
@@ -750,6 +771,8 @@ async def handle_esp32_ws(request: web.Request):
     return ws
 
 
+# Entry point for the phone: microphone audio flows up to Gemini, and
+# Gemini's spoken answers flow back down this socket to the user's earbuds.
 async def handle_phone_ws(request: web.Request):
     deny = await _require_auth(request)
     if deny:

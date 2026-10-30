@@ -1,3 +1,8 @@
+# ============================================================================
+# object_engine.py - the "what am I looking at" detector. Runs a YOLO model
+# (a fast object-detection neural network) over camera frames and reports
+# the objects it sees (cup, chair, person...) so Gemini can talk about them.
+# ============================================================================
 import time
 import json
 import os
